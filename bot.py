@@ -6,11 +6,10 @@ from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
-# --- ВОЗВРАЩАЕМ ПЕРЕМЕННЫЕ В ГЛОБАЛЬНУЮ ОБЛАСТЬ, ТЕПЕРЬ ЭТО БЕЗОПАСНО ---
+# --- ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 REMOVEBG_API_KEY = os.environ.get("REMOVEBG_API_KEY")
 REPLICATE_API_KEY = os.environ.get("REPLICATE_API_KEY")
-# ---------------------------------------------------------------------
 
 # Настройка логирования
 logging.basicConfig(
@@ -20,12 +19,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Передаем ключ в окружение для библиотеки replicate
-os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_KEY
+if REPLICATE_API_KEY:
+    os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_KEY
 
 # "База данных" для хранения фото
 user_photo_cache = {}
 
-# --- ВСЕ НАШИ ФУНКЦИИ-ОБРАБОТЧИКИ ОСТАЮТСЯ БЕЗ ИЗМЕНЕНИЙ ---
+# --- НАШИ ФУНКЦИИ-ОБРАБОТЧИКИ (без изменений) ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Привет! Отправь мне фото, и я предложу, что с ним можно сделать.")
 
@@ -84,30 +84,31 @@ async def enhance_photo(user_id, file_id, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка при улучшении качества: {e}")
         await context.bot.send_message(chat_id=user_id, text=f"Ошибка при улучшении качества.")
 
-# --- НОВАЯ ЧАСТЬ: ВСЕ В ОДНОМ МЕСТЕ ---
-if __name__ == "__main__":
-    # Создаем приложение
-    application = Application.builder().token(BOT_TOKEN).build()
+# --- ✅✅✅ ИСПРАВЛЕННАЯ И УПРОЩЕННАЯ ЛОГИКА ЗАПУСКА ✅✅✅ ---
+# 1. Создаем объект приложения БЕЗ запуска
+application = Application.builder().token(BOT_TOKEN).build()
 
-    # Добавляем обработчики
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.PHOTO, ask_for_action))
-    application.add_handler(CallbackQueryHandler(button_handler))
+# 2. Добавляем все наши обработчики
+application.add_handler(CommandHandler("start", start))
+application.add_handler(MessageHandler(filters.PHOTO, ask_for_action))
+application.add_handler(CallbackQueryHandler(button_handler))
 
-    # Создаем веб-сервер Flask
-    server = Flask(__name__)
+# 3. Создаем веб-сервер Flask
+server = Flask(__name__)
 
-    # Создаем "вход" для вебхука
-    @server.route(f"/{BOT_TOKEN}", methods=['POST'])
-    async def webhook():
-        update_data = request.get_json(force=True)
-        update = Update.de_json(update_data, application.bot)
-        await application.process_update(update)
-        return 'ok'
-
-    # Получаем порт, который Railway выдает нашему приложению
-    port = int(os.environ.get("PORT", 8443))
+# 4. Создаем ЕДИНСТВЕННЫЙ "вход" для Telegram
+@server.route(f"/{BOT_TOKEN}", methods=['POST'])
+async def webhook():
+    # Получаем "посылку" от Telegram
+    update_data = request.get_json(force=True)
+    update = Update.de_json(update_data, application.bot)
     
-    # Запускаем веб-сервер
-    # Этот код будет работать только внутри Railway
-    server.run(host="0.0.0.0", port=port)
+    # Передаем "посылку" нашему приложению для обработки
+    await application.process_update(update)
+    
+    return 'ok'
+
+# Этот код больше не нужен, так как Procfile запускает веб-сервер
+# if __name__ == "__main__":
+#     port = int(os.environ.get("PORT", 8443))
+#     server.run(host="0.0.0.0", port=port)
