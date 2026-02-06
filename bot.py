@@ -6,7 +6,11 @@ from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
-# --- ИЗМЕНЕНИЕ №1: УБИРАЕМ ПЕРЕМЕННЫЕ ИЗ ГЛОБАЛЬНОЙ ОБЛАСТИ ---
+# --- ВОЗВРАЩАЕМ ПЕРЕМЕННЫЕ В ГЛОБАЛЬНУЮ ОБЛАСТЬ, ТЕПЕРЬ ЭТО БЕЗОПАСНО ---
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+REMOVEBG_API_KEY = os.environ.get("REMOVEBG_API_KEY")
+REPLICATE_API_KEY = os.environ.get("REPLICATE_API_KEY")
+# ---------------------------------------------------------------------
 
 # Настройка логирования
 logging.basicConfig(
@@ -15,10 +19,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Передаем ключ в окружение для библиотеки replicate
+os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_KEY
+
 # "База данных" для хранения фото
 user_photo_cache = {}
 
-# Функции-обработчики (остаются такими же)
+# --- ВСЕ НАШИ ФУНКЦИИ-ОБРАБОТЧИКИ ОСТАЮТСЯ БЕЗ ИЗМЕНЕНИЙ ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Привет! Отправь мне фото, и я предложу, что с ним можно сделать.")
 
@@ -53,13 +60,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def remove_background(user_id, file_id, context: ContextTypes.DEFAULT_TYPE):
     try:
-        # --- ИЗМЕНЕНИЕ №2: ПОЛУЧАЕМ КЛЮЧ ПРЯМО ЗДЕСЬ ---
-        api_key = os.environ.get("REMOVEBG_API_KEY")
         photo_file = await context.bot.get_file(file_id)
         file_bytes = await photo_file.download_as_bytearray()
         response = requests.post(
             'https://api.remove.bg/v1.0/removebg',
-            files={'image_file': file_bytes}, data={'size': 'auto'}, headers={'X-Api-Key': api_key}
+            files={'image_file': file_bytes}, data={'size': 'auto'}, headers={'X-Api-Key': REMOVEBG_API_KEY}
         )
         response.raise_for_status()
         await context.bot.send_document(chat_id=user_id, document=response.content, filename='photo_no_bg.png', caption='Фон удален!')
@@ -69,8 +74,6 @@ async def remove_background(user_id, file_id, context: ContextTypes.DEFAULT_TYPE
 
 async def enhance_photo(user_id, file_id, context: ContextTypes.DEFAULT_TYPE):
     try:
-        # --- ИЗМЕНЕНИЕ №3: ПЕРЕДАЕМ КЛЮЧ ПРЯМО ЗДЕСЬ ---
-        os.environ["REPLICATE_API_TOKEN"] = os.environ.get("REPLICATE_API_KEY")
         photo_file = await context.bot.get_file(file_id)
         output = replicate.run(
             "nightmareai/real-esrgan:42fed1c4974146d4d2414e2be2c52377c472f1072563bb1da35a8a9a5a4523af",
@@ -81,23 +84,30 @@ async def enhance_photo(user_id, file_id, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка при улучшении качества: {e}")
         await context.bot.send_message(chat_id=user_id, text=f"Ошибка при улучшении качества.")
 
-# --- НОВАЯ ЧАСТЬ ДЛЯ РАБОТЫ В ВЕБ-СРЕДЕ ---
-# --- ИЗМЕНЕНИЕ №4: ПОЛУЧАЕМ ТОКЕН ВНУТРИ ФУНКЦИИ ---
-def setup_application():
-    bot_token = os.environ.get("BOT_TOKEN")
-    application = Application.builder().token(bot_token).build()
+# --- НОВАЯ ЧАСТЬ: ВСЕ В ОДНОМ МЕСТЕ ---
+if __name__ == "__main__":
+    # Создаем приложение
+    application = Application.builder().token(BOT_TOKEN).build()
+
+    # Добавляем обработчики
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.PHOTO, ask_for_action))
     application.add_handler(CallbackQueryHandler(button_handler))
-    return application, bot_token
 
-application, bot_token = setup_application()
+    # Создаем веб-сервер Flask
+    server = Flask(__name__)
 
-server = Flask(__name__)
+    # Создаем "вход" для вебхука
+    @server.route(f"/{BOT_TOKEN}", methods=['POST'])
+    async def webhook():
+        update_data = request.get_json(force=True)
+        update = Update.de_json(update_data, application.bot)
+        await application.process_update(update)
+        return 'ok'
 
-@server.route(f"/{bot_token}", methods=['POST'])
-async def webhook():
-    update_data = request.get_json(force=True)
-    update = Update.de_json(update_data, application.bot)
-    await application.process_update(update)
-    return 'ok'
+    # Получаем порт, который Railway выдает нашему приложению
+    port = int(os.environ.get("PORT", 8443))
+    
+    # Запускаем веб-сервер
+    # Этот код будет работать только внутри Railway
+    server.run(host="0.0.0.0", port=port)
