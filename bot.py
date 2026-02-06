@@ -6,27 +6,19 @@ from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
-# --- ВАШИ КЛЮЧИ ---
-# Мы не будем хранить их в коде, а настроим прямо в Railway
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-REMOVEBG_API_KEY = os.environ.get("REMOVEBG_API_KEY")
-REPLICATE_API_KEY = os.environ.get("REPLICATE_API_KEY")
-# --------------------
+# --- ИЗМЕНЕНИЕ №1: УБИРАЕМ ПЕРЕМЕННЫЕ ИЗ ГЛОБАЛЬНОЙ ОБЛАСТИ ---
 
-# Настройка логирования, чтобы видеть ошибки в Railway
+# Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Передаем ключ в окружение для библиотеки replicate
-os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_KEY
-
 # "База данных" для хранения фото
 user_photo_cache = {}
 
-# Функции-обработчики (остаются почти такими же)
+# Функции-обработчики (остаются такими же)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Привет! Отправь мне фото, и я предложу, что с ним можно сделать.")
 
@@ -61,11 +53,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def remove_background(user_id, file_id, context: ContextTypes.DEFAULT_TYPE):
     try:
+        # --- ИЗМЕНЕНИЕ №2: ПОЛУЧАЕМ КЛЮЧ ПРЯМО ЗДЕСЬ ---
+        api_key = os.environ.get("REMOVEBG_API_KEY")
         photo_file = await context.bot.get_file(file_id)
         file_bytes = await photo_file.download_as_bytearray()
         response = requests.post(
             'https://api.remove.bg/v1.0/removebg',
-            files={'image_file': file_bytes}, data={'size': 'auto'}, headers={'X-Api-Key': REMOVEBG_API_KEY}
+            files={'image_file': file_bytes}, data={'size': 'auto'}, headers={'X-Api-Key': api_key}
         )
         response.raise_for_status()
         await context.bot.send_document(chat_id=user_id, document=response.content, filename='photo_no_bg.png', caption='Фон удален!')
@@ -75,6 +69,8 @@ async def remove_background(user_id, file_id, context: ContextTypes.DEFAULT_TYPE
 
 async def enhance_photo(user_id, file_id, context: ContextTypes.DEFAULT_TYPE):
     try:
+        # --- ИЗМЕНЕНИЕ №3: ПЕРЕДАЕМ КЛЮЧ ПРЯМО ЗДЕСЬ ---
+        os.environ["REPLICATE_API_TOKEN"] = os.environ.get("REPLICATE_API_KEY")
         photo_file = await context.bot.get_file(file_id)
         output = replicate.run(
             "nightmareai/real-esrgan:42fed1c4974146d4d2414e2be2c52377c472f1072563bb1da35a8a9a5a4523af",
@@ -86,28 +82,22 @@ async def enhance_photo(user_id, file_id, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=user_id, text=f"Ошибка при улучшении качества.")
 
 # --- НОВАЯ ЧАСТЬ ДЛЯ РАБОТЫ В ВЕБ-СРЕДЕ ---
-# Настройка приложения
-application = Application.builder().token(BOT_TOKEN).build()
-# Добавляем все наши обработчики
-application.add_handler(CommandHandler("start", start))
-application.add_handler(MessageHandler(filters.PHOTO, ask_for_action))
-application.add_handler(CallbackQueryHandler(button_handler))
+# --- ИЗМЕНЕНИЕ №4: ПОЛУЧАЕМ ТОКЕН ВНУТРИ ФУНКЦИИ ---
+def setup_application():
+    bot_token = os.environ.get("BOT_TOKEN")
+    application = Application.builder().token(bot_token).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.PHOTO, ask_for_action))
+    application.add_handler(CallbackQueryHandler(button_handler))
+    return application, bot_token
 
-# Создаем веб-сервер с помощью Flask
+application, bot_token = setup_application()
+
 server = Flask(__name__)
 
-# Создаем единственный "вход" для всех сообщений от Telegram
-@server.route(f"/{BOT_TOKEN}", methods=['POST'])
+@server.route(f"/{bot_token}", methods=['POST'])
 async def webhook():
     update_data = request.get_json(force=True)
     update = Update.de_json(update_data, application.bot)
     await application.process_update(update)
     return 'ok'
-
-# Эта функция будет вызываться, когда Railway захочет узнать, как запустить приложение
-# Мы просто запускаем веб-сервер
-if __name__ == "__main__":
-    # Устанавливаем вебхук (один раз)
-    # application.run_webhook(listen="0.0.0.0", port=int(os.environ.get('PORT', 8443)), url_path=BOT_TOKEN, webhook_url=f"YOUR_RAILWAY_APP_URL/{BOT_TOKEN}")
-    # Для Railway лучше использовать gunicorn, а не встроенный сервер
-    pass
