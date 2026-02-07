@@ -10,6 +10,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 REMOVEBG_API_KEY = os.environ.get("REMOVEBG_API_KEY")
 REPLICATE_API_KEY = os.environ.get("REPLICATE_API_KEY")
+PORT = int(os.environ.get("PORT", 8443)) # Railway выдает нам порт
 
 # Настройка логирования
 logging.basicConfig(
@@ -28,7 +29,7 @@ user_photo_cache = {}
 # --- НАШИ ФУНКЦИИ-ОБРАБОТЧИКИ (без изменений) ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Привет! Отправь мне фото, и я предложу, что с ним можно сделать.")
-
+# ... (здесь идут все остальные ваши функции: ask_for_action, button_handler, remove_background, enhance_photo - они остаются такими же, как в прошлом коде)
 async def ask_for_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     photo_file_id = update.message.photo[-1].file_id
@@ -84,11 +85,11 @@ async def enhance_photo(user_id, file_id, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка при улучшении качества: {e}")
         await context.bot.send_message(chat_id=user_id, text=f"Ошибка при улучшении качества.")
 
-# --- ✅✅✅ ИСПРАВЛЕННАЯ И УПРОЩЕННАЯ ЛОГИКА ЗАПУСКА ✅✅✅ ---
-# 1. Создаем объект приложения БЕЗ запуска
+# --- ✅✅✅ НОВАЯ, ЕДИНСТВЕННО ПРАВИЛЬНАЯ ЛОГИКА ЗАПУСКА ✅✅✅ ---
+# 1. Создаем объект приложения
 application = Application.builder().token(BOT_TOKEN).build()
 
-# 2. Добавляем все наши обработчики
+# 2. Добавляем обработчики
 application.add_handler(CommandHandler("start", start))
 application.add_handler(MessageHandler(filters.PHOTO, ask_for_action))
 application.add_handler(CallbackQueryHandler(button_handler))
@@ -96,19 +97,15 @@ application.add_handler(CallbackQueryHandler(button_handler))
 # 3. Создаем веб-сервер Flask
 server = Flask(__name__)
 
-# 4. Создаем ЕДИНСТВЕННЫЙ "вход" для Telegram
+# 4. Создаем "вход" для Telegram
 @server.route(f"/{BOT_TOKEN}", methods=['POST'])
 async def webhook():
-    # Получаем "посылку" от Telegram
     update_data = request.get_json(force=True)
     update = Update.de_json(update_data, application.bot)
-    
-    # Передаем "посылку" нашему приложению для обработки
     await application.process_update(update)
-    
     return 'ok'
 
-# Этот код больше не нужен, так как Procfile запускает веб-сервер
-# if __name__ == "__main__":
-#     port = int(os.environ.get("PORT", 8443))
-#     server.run(host="0.0.0.0", port=port)
+# 5. Запускаем Flask-сервер, который будет работать вечно
+# Этот код запустится, когда Railway выполнит команду `python bot.py`
+server.run(host="0.0.0.0", port=PORT)
+
